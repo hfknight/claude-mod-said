@@ -9,11 +9,31 @@ const focus = atom({ plugin: 'said', key: 'focus' } as const, null as string | n
 
 // Row ids of the person's messages the transcript shows now, as their rows report it.
 const shown = new Set<string>()
+// The topmost of them when the focus last followed it.
+let top: string | undefined
 
-// The focus follows the topmost of those; with none on screen it stays where it was.
+// The focus follows the topmost of those when that changes, so a message sent below
+// it keeps the focus; with none on screen it stays where it was.
 const follow = async ($: EngineInterface) => {
-  const top = (await read($, prompts)).find(one => shown.has(one.uuid))
-  if (top !== undefined) await update($, focus, () => top.uuid)
+  const first = (await read($, prompts)).find(one => shown.has(one.uuid))
+  if (first?.uuid === top) return
+  top = first?.uuid
+  if (first !== undefined) await update($, focus, () => first.uuid)
+}
+
+// Whether a turn was interrupted since the latest message was checked for.
+let isAborted = false
+
+// Esc before Claude answers takes the message back into the prompt: once the
+// conversation holds fewer messages of the latest one's text than are listed, it goes.
+const dropTaken = async ($: EngineInterface) => {
+  const list = await read($, prompts)
+  const latest = list.findLast(one => !one.isMidTurn)
+  if (latest === undefined) return
+  const words = latest.text.trim()
+  const kept = (await $.session.messages()).filter(m => m.role === 'user' && m.text.trim() === words).length
+  const listed = list.filter(one => !one.isMidTurn && one.text.trim() === words).length
+  if (kept < listed) await update($, prompts, now => now.filter(one => one.uuid !== latest.uuid))
 }
 
 // One line: whitespace collapsed, cut to the room with an ellipsis.
@@ -52,21 +72,44 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: 'Closed the Said pane.' }
     }
-    await $.ui.open({ id: PANE, title: 'Said' })
+    const opened = await $.ui.open({ id: PANE, title: 'Said' })
+    // Opens at the latest message. The body becomes this plugin's to scroll a moment
+    // after the pane is placed ("not this plugin's site" until then), so it retries.
+    for (let tries = 0; opened.isPlaced && tries < 10; tries++) {
+      if ((await $.ui.scroll({ in: PANE, to: 'end' })).deny === undefined) break
+      await $.clock.sleep(20)
+    }
     return { text: 'Opened the Said pane.' }
+  })
+
+  // A turn interrupted may have taken its message back; it is gone from the
+  // conversation by now, or by the next message, which checks again.
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.isAborted && e.agentId === undefined) {
+      isAborted = true
+      await dropTaken($)
+    }
+    return done
   })
 
   // The person's own prompts on the main conversation, kept with the row id
   // the transcript draws them under; one sent mid-turn comes in as a delivery.
   on('session.append', async ($, e, next) => {
-    const stored = await next(e)
     const isPersons = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
     const isPrompt = e.door === 'prompt' || e.door === 'delivery'
+    // Checked before this one is stored, so the same words sent again aren't counted.
+    if (isPrompt && isPersons && e.agentId === undefined && isAborted) {
+      isAborted = false
+      await dropTaken($)
+    }
+    const stored = await next(e)
     if (isPrompt && isPersons && e.agentId === undefined && stored.deny === undefined) {
       const text = stored.message.content.map(block => (block.type === 'text' ? block.text : '')).join(' ')
       const at = await $.clock.now()
       const isMidTurn = e.door === 'delivery'
       await update($, prompts, list => [...list, { uuid: stored.uuid, text, at, isMidTurn }])
+      await update($, focus, () => stored.uuid)
     }
     return stored
   })
