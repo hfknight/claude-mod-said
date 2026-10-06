@@ -1,0 +1,13 @@
+{
+  "name": "claude-mod-said",
+  "description": "The /said Claude Code mod: a side panel of the messages you sent, click one to jump to it",
+  "owner": {
+    "name": "Fei Hu"
+  },
+  "plugins": [
+    {
+      "name": "said",
+      "source": "./"
+    }
+  ]
+}
