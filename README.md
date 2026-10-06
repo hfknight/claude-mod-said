@@ -2,14 +2,7 @@
 
 A Claude Code mod: `/said` opens a side panel listing every message you've sent in the session, as a timeline. Press one and the transcript scrolls back to it.
 
-```
-10:31 ● build a mod that lists my messages
-      │
-10:33 ● yes but pick a different / command
-      ├─ sent is kinda misleading?
-      │
-10:36 ● are we ready to test the mod now?
-```
+![The /said panel beside a Claude Code transcript: five messages on a timeline, the accented dot on the turn the transcript is scrolled to, a mid-turn message branching off it](docs/screenshot.png)
 
 - Each turn is a dot with the time you sent it; a message you sent while Claude was still working branches off its turn (`├─`).
 - The accented dot follows the transcript: it marks the message you jumped to, or the topmost of your messages on screen as you scroll.
