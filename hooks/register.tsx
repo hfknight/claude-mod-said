@@ -22,6 +22,15 @@ export const shorten = (text: string, room: number) => {
   return flat.length <= room ? flat : flat.slice(0, Math.max(1, room - 1)) + '…'
 }
 
+// A message sent mid-turn reaches the model inside the engine's reminder
+// ("The user sent a new message while you were working: …", then "IMPORTANT: …"
+// or "This is how Claude Code surfaces …");
+// this is the person's own words from it.
+export const unframe = (text: string) => {
+  const sent = text.match(/new message while you were working:\s*([\s\S]*?)\s*(?:\n\s*(?:IMPORTANT:|This is how Claude Code)|<\/system-reminder>|$)/)
+  return (sent?.[1] ?? text).replace(/<\/?system-reminder>/g, '').trim()
+}
+
 // 24-hour local time, as `10:36`.
 export const clockTime = (ms: number) => {
   const d = new Date(ms)
@@ -111,7 +120,7 @@ export const register: Register = on => {
               <Button
                 key={`m-${one.uuid}`}
                 plain
-                label={shorten(one.text, columns - width)}
+                label={shorten(one.isMidTurn ? unframe(one.text) : one.text, columns - width)}
                 dimColor={one.isMidTurn}
                 hover={{ color: 'claude' }}
                 onPress={jump}

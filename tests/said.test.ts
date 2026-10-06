@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clockTime, shorten } from '../hooks/register'
+import { clockTime, shorten, unframe } from '../hooks/register'
 
 const PANE = {
   plugin: 'said',
@@ -21,6 +21,16 @@ test('a prompt becomes one line that fits the room', async () => {
   expect(shorten('fix the   flaky\ncrop test please', 40)).toBe('fix the flaky crop test please')
   expect(shorten('fix the flaky crop test please', 10)).toBe('fix the f…')
   expect(shorten('  \n ', 10)).toBe('(no text)')
+})
+
+test('a mid-turn message is shown without the reminder around it', async () => {
+  const framed =
+    '<system-reminder>\nThe user sent a new message while you were working:\ninclude a trailing call\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
+  expect(unframe(framed)).toBe('include a trailing call')
+  const newer =
+    'The user sent a new message while you were working:\ninclude a trailing call\n\nThis is how Claude Code surfaces messages the user sends mid-turn.'
+  expect(unframe(newer)).toBe('include a trailing call')
+  expect(unframe('just the words')).toBe('just the words')
 })
 
 test('a time reads as 24-hour local hours and minutes', async () => {
