@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clockTime, shorten, unframe } from '../hooks/register'
+import { clockTime, pause, shorten, span, tail, unframe } from '../hooks/register'
 
 const PANE = {
   plugin: 'said',
@@ -36,4 +36,17 @@ test('a mid-turn message is shown without the reminder around it', async () => {
 test('a time reads as 24-hour local hours and minutes', async () => {
   expect(clockTime(new Date(2026, 9, 6, 9, 5).getTime())).toBe('09:05')
   expect(clockTime(new Date(2026, 9, 6, 22, 41).getTime())).toBe('22:41')
+})
+
+test('a turn ends its row with how long it took and how it stopped', async () => {
+  expect(span(38_400)).toBe('38s')
+  expect(span(252_000)).toBe('4m12s')
+  expect(span(3_900_000)).toBe('1h05m')
+  expect(pause(25 * 60_000)).toBe('25m')
+  expect(pause(65 * 60_000)).toBe('1h05m')
+  expect(tail({ uuid: 'a', text: 'x', tookMs: 38_000, ended: 'answer' })).toBe('38s')
+  expect(tail({ uuid: 'a', text: 'x', tookMs: 12_000, ended: 'aborted' })).toBe('✗ 12s')
+  expect(tail({ uuid: 'a', text: 'x', tookMs: 12_000, ended: 'error' })).toBe('! 12s')
+  expect(tail({ uuid: 'a', text: 'x' })).toBeUndefined()
+  expect(tail({ uuid: 'a', text: 'x', isMidTurn: true })).toBeUndefined()
 })

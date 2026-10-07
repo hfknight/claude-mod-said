@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Said } from '../types'
 
 const PANE = 'said'
 const prompts = atom({ plugin: 'said', key: 'prompts' } as const, [] as Said[])
 const focus = atom({ plugin: 'said', key: 'focus' } as const, null as string | null)
+const pulse = atom({ plugin: 'said', key: 'pulse' } as const, false)
 
 // Row ids of the person's messages the transcript shows now, as their rows report it.
 const shown = new Set<string>()
@@ -20,6 +21,13 @@ const follow = async ($: EngineInterface) => {
   top = first?.uuid
   if (first !== undefined) await update($, focus, () => first.uuid)
 }
+
+// The message whose turn is running, its dot pulsing on the beat; a reload forgets it.
+let running: string | undefined
+let beat: Timer | undefined
+
+// The pane's window and its tree's height when it was last drawn.
+let seen: { offset: number; bodyRows: number; total: number } | undefined
 
 // Whether a turn was interrupted since the latest message was checked for.
 let isAborted = false
@@ -57,6 +65,32 @@ export const clockTime = (ms: number) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+// A length of time to the second, as `38s`, `4m12s` or `1h05m`.
+export const span = (ms: number) => {
+  const s = Math.round(ms / 1000)
+  const m = Math.floor(s / 60)
+  if (s < 60) return `${s}s`
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+}
+
+// A pause between turns to the minute, as `25m` or `1h05m`.
+export const pause = (ms: number) => {
+  const m = Math.round(ms / 60_000)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+}
+
+// What ends a turn's row once Claude is done: how long it took, after ✗ if you interrupted
+// it or ! if it stopped on an error or a refusal. Nothing for a mid-turn message.
+export const tail = (one: Said) => {
+  if (one.isMidTurn || one.tookMs === undefined) return undefined
+  const mark = one.ended === 'aborted' ? '✗ ' : one.ended === 'error' || one.ended === 'refusal' ? '! ' : ''
+  return mark + span(one.tookMs)
+}
+
+// Turns this far apart get the pause shown between them.
+const LONG_PAUSE = 10 * 60_000
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -82,10 +116,23 @@ export const register: Register = on => {
     return { text: 'Opened the Said pane.' }
   })
 
+  // A turn's length and ending go on the latest turn listed, once: a turn nobody sent
+  // (a background agent's report) finds it already timed.
   // A turn interrupted may have taken its message back; it is gone from the
   // conversation by now, or by the next message, which checks again.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    if (e.agentId === undefined) {
+      running = undefined
+      beat?.cancel()
+      beat = undefined
+      await update($, pulse, () => false)
+      await update($, prompts, list => {
+        const i = list.findLastIndex(one => !one.isMidTurn)
+        if (i === -1 || list[i]?.tookMs !== undefined) return list
+        return list.map((one, j) => (j === i ? { ...one, tookMs: e.durationMs, ended: e.reason } : one))
+      })
+    }
     if (e.isAborted && e.agentId === undefined) {
       isAborted = true
       await dropTaken($)
@@ -110,6 +157,13 @@ export const register: Register = on => {
       const isMidTurn = e.door === 'delivery'
       await update($, prompts, list => [...list, { uuid: stored.uuid, text, at, isMidTurn }])
       await update($, focus, () => stored.uuid)
+      // The pane follows it down once it is drawn with it; with the pane closed, the
+      // scroll is refused and nothing moves.
+      $.clock.after(100, () => void $.ui.scroll({ in: PANE, to: 'end' }))
+      if (!isMidTurn) {
+        running = stored.uuid
+        beat ??= $.clock.every(800, () => void update($, pulse, isLit => !isLit))
+      }
     }
     return stored
   })
@@ -139,8 +193,21 @@ export const register: Register = on => {
     let accent = list.findIndex(one => one.uuid === current)
     if (accent === -1) accent = list.findLastIndex(one => !one.isMidTurn)
     while (accent > 0 && list[accent]?.isMidTurn) accent--
+    const midTurns = list.filter(one => one.isMidTurn).length
+    const working = list.reduce((sum, one) => sum + (one.tookMs ?? 0), 0)
+    // Rows the tree takes: one per message, the rail between turns, the rule and the footer.
+    const total = list.length + list.filter((one, i) => i > 0 && !one.isMidTurn).length + 2
+    // A pane at the end stays there when it gets shorter (the prompt grows, a notice shows)
+    // or the list longer, so the footer stays in view; scrolling up moves neither.
+    const { offset, bodyRows } = e.props.scroll
+    const wasAtEnd = seen !== undefined && seen.offset + seen.bodyRows >= seen.total
+    const isResized = seen !== undefined && (seen.bodyRows !== bodyRows || seen.total !== total)
+    if (wasAtEnd && isResized && offset + bodyRows < total) $.clock.after(0, () => void $.ui.scroll({ in: PANE, to: 'end' }))
+    seen = { offset, bodyRows, total }
+    const isLit = running === undefined || (await read($, pulse))
     return (
-      <Box flexDirection="column">
+      // Docked, it fills the pane so the footer sits at the bottom under a short list.
+      <Box flexDirection="column" minHeight={e.props.placement === 'dock' ? bodyRows : undefined}>
         {list.flatMap((one, i) => {
           const jump = async () => {
             await update($, focus, () => one.uuid)
@@ -152,32 +219,54 @@ export const register: Register = on => {
             <Text color="subtle">{'      ├─ '}</Text>
           ) : (
             <Text>
-              <Text color="subtle">{one.at === undefined ? '     ' : clockTime(one.at)}</Text>
-              <Text color={i === accent ? 'claude' : 'inactive'}>{' ● '}</Text>
+              <Text color={i === accent ? 'claude' : 'subtle'}>
+                {one.at === undefined ? '     ' : clockTime(one.at)}
+                {` ${(i === accent ? '●○' : '•◦')[one.uuid === running && !isLit ? 1 : 0]} `}
+              </Text>
             </Text>
           )
           const width = one.isMidTurn ? 9 : 8
+          // The end of the row sits at the right edge, dot leaders running up to it.
+          const end = tail(one)
+          const label = shorten(one.isMidTurn ? unframe(one.text) : one.text, columns - width - (end === undefined ? 0 : end.length + 3))
+          const after =
+            end === undefined
+              ? []
+              : [
+                  <Text key={`t-${one.uuid}`}>
+                    <Text color="subtle">{` ${'·'.repeat(Math.max(1, columns - width - label.length - end.length - 2))} `}</Text>
+                    <Text color="subtle">{end}</Text>
+                  </Text>,
+                ]
           const row = (
             <Box key={`r-${one.uuid}`} flexDirection="row">
               {marker}
-              <Button
-                key={`m-${one.uuid}`}
-                plain
-                label={shorten(one.isMidTurn ? unframe(one.text) : one.text, columns - width)}
-                dimColor={one.isMidTurn}
-                hover={{ color: 'claude' }}
-                onPress={jump}
-              />
+              <Button key={`m-${one.uuid}`} plain label={label} dimColor={one.isMidTurn} hover={{ color: 'claude' }} onPress={jump} />
+              {after}
             </Box>
           )
           if (i === 0 || one.isMidTurn) return [row]
+          // A long pause since the turn before shows on the rail between them.
+          const before = list.slice(0, i).findLast(other => !other.isMidTurn)
+          const idle = one.at === undefined || before?.at === undefined ? 0 : one.at - before.at - (before.tookMs ?? 0)
           return [
             <Text key={`g-${one.uuid}`} color="subtle">
-              {'      │'}
+              {idle >= LONG_PAUSE ? `      ┆ ${pause(idle)}` : '      │'}
             </Text>,
             row,
           ]
         })}
+        <Box key="spacer" flexGrow={1} />
+        {/* Under the list, where the pane sits, so it stays in view. */}
+        <Text key="rule" color="subtle">
+          {'─'.repeat(columns)}
+        </Text>
+        <Text key="footer">
+          <Text bold>said</Text>
+          <Text color="inactive">
+            {` · ${list.length} sent${midTurns > 0 ? ` · ${midTurns} mid-turn` : ''}${working > 0 ? ` · ${span(working)} working` : ''}`}
+          </Text>
+        </Text>
       </Box>
     )
   })
