@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { clockTime, pause, shorten, span, tail, unframe } from '../hooks/register'
+import { clockTime, command, pause, shorten, span, tail, unframe } from '../hooks/register'
 
 const PANE = {
   plugin: 'said',
@@ -31,6 +31,15 @@ test('a mid-turn message is shown without the reminder around it', async () => {
     'The user sent a new message while you were working:\ninclude a trailing call\n\nThis is how Claude Code surfaces messages the user sends mid-turn.'
   expect(unframe(newer)).toBe('include a trailing call')
   expect(unframe('just the words')).toBe('just the words')
+})
+
+test('a slash command reads as typed, without its plugin\'s namespace', async () => {
+  const skill =
+    '<command-message>mattpocock-skills:grill-with-docs</command-message>\n<command-name>/mattpocock-skills:grill-with-docs</command-name>\n<command-args>in applicationconfiguration, the Default Model</command-args>'
+  expect(command(skill)).toEqual({ name: '/grill-with-docs', args: 'in applicationconfiguration, the Default Model' })
+  const bare = '<command-name>/review</command-name>\n            <command-message>review</command-message>\n            <command-args></command-args>'
+  expect(command(bare)).toEqual({ name: '/review', args: '' })
+  expect(command('just the words')).toBeUndefined()
 })
 
 test('a time reads as 24-hour local hours and minutes', async () => {

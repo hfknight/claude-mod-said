@@ -1,6 +1,6 @@
 {
   "name": "said",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "/said opens a pane listing every message you sent this session; press one to scroll the transcript to it",
   "author": { "name": "Fei Hu" },
   "homepage": "https://github.com/hfknight/claude-mod-said",

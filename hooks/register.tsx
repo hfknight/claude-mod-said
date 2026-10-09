@@ -32,6 +32,10 @@ let seen: { offset: number; bodyRows: number; total: number } | undefined
 // Whether a turn was interrupted since the latest message was checked for.
 let isAborted = false
 
+// The slash command stored last, listed once a turn starts with it: one that runs
+// no turn (`/clear`, `/model`, `/said`) never is.
+let waiting: { uuid: string; text: string; at: number } | undefined
+
 // Esc before Claude answers takes the message back into the prompt: once the
 // conversation holds fewer messages of the latest one's text than are listed, it goes.
 const dropTaken = async ($: EngineInterface) => {
@@ -42,6 +46,20 @@ const dropTaken = async ($: EngineInterface) => {
   const kept = (await $.session.messages()).filter(m => m.role === 'user' && m.text.trim() === words).length
   const listed = list.filter(one => !one.isMidTurn && one.text.trim() === words).length
   if (kept < listed) await update($, prompts, now => now.filter(one => one.uuid !== latest.uuid))
+}
+
+// Lists a message the person sent and gives it the focus; a turn's message pulses
+// until the turn ends.
+const record = async ($: EngineInterface, one: Said & { at: number; isMidTurn: boolean }) => {
+  await update($, prompts, list => [...list, one])
+  await update($, focus, () => one.uuid)
+  // The pane follows it down once it is drawn with it; with the pane closed, the
+  // scroll is refused and nothing moves.
+  $.clock.after(100, () => void $.ui.scroll({ in: PANE, to: 'end' }))
+  if (!one.isMidTurn) {
+    running = one.uuid
+    beat ??= $.clock.every(800, () => void update($, pulse, isLit => !isLit))
+  }
 }
 
 // One line: whitespace collapsed, cut to the room with an ellipsis.
@@ -57,6 +75,15 @@ export const shorten = (text: string, room: number) => {
 export const unframe = (text: string) => {
   const sent = text.match(/new message while you were working:\s*([\s\S]*?)\s*(?:\n\s*(?:IMPORTANT:|This is how Claude Code)|<\/system-reminder>|$)/)
   return (sent?.[1] ?? text).replace(/<\/?system-reminder>/g, '').trim()
+}
+
+// A slash command is stored inside the engine's tags; this is its name as typed,
+// less a plugin's namespace, and the words after it. Undefined for any other message.
+export const command = (text: string) => {
+  const name = text.match(/<command-name>\s*\/?(?:[^<:]*:)?([^<]*?)\s*<\/command-name>/)?.[1]
+  if (name === undefined) return undefined
+  const args = text.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1] ?? ''
+  return { name: `/${name}`, args: args.trim() }
 }
 
 // 24-hour local time, as `10:36`.
@@ -151,21 +178,21 @@ export const register: Register = on => {
       await dropTaken($)
     }
     const stored = await next(e)
-    if (isPrompt && isPersons && e.agentId === undefined && stored.deny === undefined) {
+    if (e.agentId === undefined && stored.deny === undefined) {
       const text = stored.message.content.map(block => (block.type === 'text' ? block.text : '')).join(' ')
-      const at = await $.clock.now()
-      const isMidTurn = e.door === 'delivery'
-      await update($, prompts, list => [...list, { uuid: stored.uuid, text, at, isMidTurn }])
-      await update($, focus, () => stored.uuid)
-      // The pane follows it down once it is drawn with it; with the pane closed, the
-      // scroll is refused and nothing moves.
-      $.clock.after(100, () => void $.ui.scroll({ in: PANE, to: 'end' }))
-      if (!isMidTurn) {
-        running = stored.uuid
-        beat ??= $.clock.every(800, () => void update($, pulse, isLit => !isLit))
-      }
+      if (isPrompt && isPersons) await record($, { uuid: stored.uuid, text, at: await $.clock.now(), isMidTurn: e.door === 'delivery' })
+      // Its origin doesn't say who ran it; a turn that starts with its text does.
+      if (e.door === 'command' && command(text) !== undefined) waiting = { uuid: stored.uuid, text, at: await $.clock.now() }
     }
     return stored
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (waiting !== undefined && waiting.text.trim() === e.text.trim()) {
+      await record($, { ...waiting, isMidTurn: false })
+      waiting = undefined
+    }
+    return next(e)
   })
 
   // Passes every row through as drawn, noting only whether it is on screen. A render
@@ -228,7 +255,9 @@ export const register: Register = on => {
           const width = one.isMidTurn ? 9 : 8
           // The end of the row sits at the right edge, dot leaders running up to it.
           const end = tail(one)
-          const label = shorten(one.isMidTurn ? unframe(one.text) : one.text, columns - width - (end === undefined ? 0 : end.length + 3))
+          const slash = command(one.text)
+          const words = slash === undefined ? (one.isMidTurn ? unframe(one.text) : one.text) : `${slash.name} ${slash.args}`
+          const label = shorten(words, columns - width - (end === undefined ? 0 : end.length + 3))
           const after =
             end === undefined
               ? []
@@ -241,7 +270,15 @@ export const register: Register = on => {
           const row = (
             <Box key={`r-${one.uuid}`} flexDirection="row">
               {marker}
-              <Button key={`m-${one.uuid}`} plain label={label} dimColor={one.isMidTurn} hover={{ color: 'claude' }} onPress={jump} />
+              {slash === undefined ? (
+                <Button key={`m-${one.uuid}`} plain label={label} dimColor={one.isMidTurn} hover={{ color: 'claude' }} onPress={jump} />
+              ) : (
+                // The command's name in grey, the words after it as any message's.
+                <Button key={`m-${one.uuid}`} plain hover={{ color: 'claude' }} onPress={jump}>
+                  <Text color="subtle">{label.slice(0, slash.name.length)}</Text>
+                  {label.slice(slash.name.length)}
+                </Button>
+              )}
               {after}
             </Box>
           )

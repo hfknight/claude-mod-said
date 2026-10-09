@@ -30,7 +30,8 @@ Answer `y` to add the marketplace, then press Enter to install at user scope. It
 
 - `session.start`: registers the `/said` command.
 - `command.run`, only for `said`: opens or closes the panel. Other commands aren't seen.
-- `session.append`: reads each message you send after Claude Code has stored it, to list it and scroll the panel down to it. It doesn't change or block anything.
+- `session.append`: reads each message you send after Claude Code has stored it, to list it and scroll the panel down to it, and each slash command, held until a turn starts with it. It doesn't change or block anything.
+- `turn.start`: lists the slash command a turn starts with (a skill, a prompt command); commands that don't start a turn, such as `/clear`, aren't listed. It doesn't change the turn.
 - `turn.complete`: notes how long the turn took and how it ended; after you interrupt a turn, reads the conversation's messages to drop one that Esc took back into the prompt. It doesn't change the turn.
 - `ui.render` of your messages in the transcript: notes which are on screen, to move the accent. They're drawn unchanged.
 - `ui.render` of its own panel: draws the list.
